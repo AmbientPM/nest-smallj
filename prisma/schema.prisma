@@ -1,0 +1,142 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model User {
+    id               Int      @id @default(autoincrement())
+    telegramId       BigInt   @unique @map("telegram_id")
+    telegramUsername String?  @map("telegram_username")
+    telegramName     String   @map("telegram_name")
+    xlmBalance       Float    @default(0) @map("xlm_balance")
+    createdAt        DateTime @default(now()) @map("created_at")
+    updatedAt        DateTime @updatedAt @map("updated_at")
+
+    wallets        Wallet[]
+    actionLogs     ActionLog[]
+    billingDetails BillingDetails?
+
+    @@map("users")
+}
+
+model Wallet {
+    id        Int      @id @default(autoincrement())
+    userId    Int      @map("user_id")
+    publicKey String   @unique @map("public_key")
+    balance   Float    @default(0)
+    rewards   Json?    @default("[]")
+    isActive  Boolean  @default(true) @map("is_active")
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@map("wallets")
+}
+
+model BillingDetails {
+    id        Int      @id @default(autoincrement())
+    userId    Int      @unique @map("user_id")
+    fullName  String   @map("full_name")
+    address   String
+    city      String
+    country   String
+    zipCode   String   @map("zip_code")
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@map("billing_details")
+}
+
+model Settings {
+    id                        Int      @id @default(autoincrement())
+    depositAddress            String?  @map("deposit_address")
+    depositAmount             Float?   @map("deposit_amount")
+    issuerPublic              String?  @map("issuer_public")
+    issuerSecret              String?  @map("issuer_secret")
+    sendingEnabled            Boolean  @default(false) @map("sending_enabled")
+    xrpDepositAddress         String?  @map("xrp_deposit_address")
+    xrpNwoPrice               Float?   @map("xrp_nwo_price")
+    purchaseDistributorPublic String?  @map("purchase_distributor_public")
+    purchaseDistributorSecret String?  @map("purchase_distributor_secret")
+    rewardsTier               Json?    @map("rewards_tier")
+    swapTier                  Json?    @map("swap_tier")
+    welcomeImageFileId        String?  @map("welcome_image_file_id")
+    mainTokenHolders          Json?    @map("main_token_holders")
+    updatedAt                 DateTime @updatedAt @map("updated_at")
+
+    @@map("settings")
+}
+
+model StakingAsset {
+    id          Int      @id @default(autoincrement())
+    assetCode   String   @map("asset_code")
+    assetIssuer String   @map("asset_issuer")
+    price       Float
+    tier        Json
+    premium     Float    @default(0)
+    createdAt   DateTime @default(now()) @map("created_at")
+    updatedAt   DateTime @updatedAt @map("updated_at")
+
+    @@unique([assetCode, assetIssuer])
+    @@map("staking_assets")
+}
+
+model Distributor {
+    id        Int      @id @default(autoincrement())
+    publicKey String   @unique @map("public_key")
+    secretKey String   @map("secret_key")
+    isActive  Boolean  @default(true) @map("is_active")
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("distributors")
+}
+
+model Company {
+    id           Int      @id @default(autoincrement())
+    name         String   @unique
+    logoUrl      String?  @map("logo_url")
+    addingAmount Float    @default(0) @map("adding_amount")
+    createdAt    DateTime @default(now()) @map("created_at")
+    updatedAt    DateTime @updatedAt @map("updated_at")
+
+    @@map("companies")
+}
+
+model Liquidity {
+    id                Int      @id @default(autoincrement())
+    milestone         Float
+    startAmount       Float    @map("start_amount")
+    addingAmount      Float    @map("adding_amount")
+    endAmount         Float    @map("end_amount")
+    distributorPublic String?  @map("distributor_public")
+    createdAt         DateTime @default(now()) @map("created_at")
+    updatedAt         DateTime @updatedAt @map("updated_at")
+
+    @@map("liquidity")
+}
+
+model ActionLog {
+    id           Int      @id @default(autoincrement())
+    userId       Int      @map("user_id")
+    username     String?
+    fullName     String?  @map("full_name")
+    actionType   String   @map("action_type")
+    actionData   Json?    @map("action_data")
+    errorMessage String?  @map("error_message")
+    createdAt    DateTime @default(now()) @map("created_at")
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@map("action_logs")
+}
