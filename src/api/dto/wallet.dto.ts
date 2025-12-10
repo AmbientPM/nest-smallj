@@ -10,6 +10,16 @@ export class AddWalletDto {
     publicKey: string;
 }
 
+export class VerifyWalletDto {
+    @IsOptional()
+    @IsString()
+    initData?: string;
+
+    @IsNotEmpty()
+    @IsNumber()
+    walletId: number;
+}
+
 export class DeleteWalletDto {
     @IsOptional()
     @IsString()

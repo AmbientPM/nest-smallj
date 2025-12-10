@@ -11,7 +11,6 @@ import { AdminStakingAssetsUpdate } from './admin/staking-assets.update';
 import { AdminRewardsTierUpdate } from './admin/rewards-tier.update';
 import { AdminSwapTierUpdate } from './admin/swap-tier.update';
 import { AdminRaiseTierPercentUpdate } from './admin/raise-tier-percent.update';
-import { AdminWelcomeImageUpdate } from './admin/welcome-image.update';
 
 @Update()
 @UseGuards(IsPrivateGuard, IsAdminGuard)
@@ -26,7 +25,6 @@ export class TextHandlerUpdate {
         private readonly rewardsTierUpdate: AdminRewardsTierUpdate,
         private readonly swapTierUpdate: AdminSwapTierUpdate,
         private readonly raiseTierPercentUpdate: AdminRaiseTierPercentUpdate,
-        private readonly welcomeImageUpdate: AdminWelcomeImageUpdate,
     ) { }
 
     @On('text')
@@ -77,6 +75,7 @@ export class TextHandlerUpdate {
 
         console.log('[TextHandler] No handler found for step:', step);
     }
+
     @On('photo')
     async handlePhoto(@Ctx() ctx: Context) {
         const step = ctx.session.step;
@@ -85,10 +84,6 @@ export class TextHandlerUpdate {
 
         if (step === 'company_logo') {
             return this.companiesUpdate.handlePhoto(ctx);
-        }
-
-        if (step === 'welcome_image') {
-            return this.welcomeImageUpdate.handlePhoto(ctx);
         }
 
         console.log('[TextHandler] No photo handler found for step:', step);

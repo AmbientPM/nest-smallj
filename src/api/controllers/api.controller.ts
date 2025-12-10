@@ -13,7 +13,7 @@ import { BillingService } from '../services/billing.service';
 import { PurchaseService } from '../services/purchase.service';
 import { SwapService } from '../services/swap.service';
 import { UserStatisticsDto } from '../dto/user-statistics.dto';
-import { AddWalletDto, DeleteWalletDto } from '../dto/wallet.dto';
+import { AddWalletDto, VerifyWalletDto, DeleteWalletDto } from '../dto/wallet.dto';
 import { DepositCardDto, WithdrawCardDto } from '../dto/card.dto';
 import { AddBillingDetailsDto } from '../dto/billing.dto';
 import { CreatePurchaseDto } from '../dto/purchase.dto';
@@ -87,6 +87,12 @@ export class ApiController {
     async addWallet(@Body(ValidationPipe) body: AddWalletDto) {
         const user = await this.validateAndGetUser(body.initData);
         return this.walletService.addWallet(user.id, body.publicKey);
+    }
+
+    @Post('/verifyWallet')
+    async verifyWallet(@Body(ValidationPipe) body: VerifyWalletDto) {
+        const user = await this.validateAndGetUser(body.initData);
+        return this.walletService.verifyWallet(user.id, body.walletId);
     }
 
     @Post('/deleteWallet')

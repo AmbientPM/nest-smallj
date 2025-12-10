@@ -9,9 +9,10 @@ import { PurchaseService } from './services/purchase.service';
 import { SwapService } from './services/swap.service';
 import { StatusGateway } from './gateways/status.gateway';
 import { DatabaseModule } from '../database/database.module';
+import { BlockchainModule } from '../blockchain/blockchain.module';
 
 @Module({
-    imports: [ConfigModule, DatabaseModule],
+    imports: [ConfigModule, DatabaseModule, BlockchainModule],
     controllers: [ApiController],
     providers: [
         {

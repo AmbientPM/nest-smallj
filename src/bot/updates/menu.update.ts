@@ -30,10 +30,12 @@ export class MenuUpdate {
         // Fallback to local file if not in DB
         const welcomeImagePath = path.join(process.cwd(), 'welcome.png');
 
+        const caption = '<b>🇺🇸 The New World Order App</b>\n\nStart staking your RLUSD, USDC, XRP, and XLM seamlessly and securely. Your journey to effortless earning begins here!';
+
         if (welcomeImageFileId) {
             // Use image from database (Telegram file_id)
             await ctx.replyWithPhoto(welcomeImageFileId, {
-                caption: '<b>🇺🇸 The New World Order App</b>',
+                caption,
                 parse_mode: 'HTML',
                 ...userMenuKeyboard(appUrl),
             });
@@ -42,19 +44,16 @@ export class MenuUpdate {
             await ctx.replyWithPhoto(
                 { source: welcomeImagePath },
                 {
-                    caption: '<b>🇺🇸 The New World Order App</b>',
+                    caption,
                     parse_mode: 'HTML',
                     ...userMenuKeyboard(appUrl),
                 },
             );
         } else {
-            await ctx.reply(
-                '<b>🇺🇸 The New World Order App</b>\n\nStart staking your RLUSD, USDC, XRP, and XLM seamlessly and securely. Your journey to effortless earning begins here!',
-                {
-                    parse_mode: 'HTML',
-                    ...userMenuKeyboard(appUrl),
-                },
-            );
+            await ctx.reply(caption, {
+                parse_mode: 'HTML',
+                ...userMenuKeyboard(appUrl),
+            });
         }
 
         const adminIds = this.configService
@@ -74,16 +73,11 @@ export class MenuUpdate {
     @Action('cancel')
     async onCancel(@Ctx() ctx: Context) {
         await MessageManager.clearSessionAndMessages(ctx);
-        await ctx.editMessageText('❌ Cancelled');
-        await ctx.answerCbQuery();
+        await MessageManager.editOrSend(ctx, '❌ Cancelled');
 
         // Return to menu after a moment
         setTimeout(async () => {
-            try {
-                await ctx.deleteMessage();
-            } catch (error) {
-                // Ignore
-            }
+            await MessageManager.safeDelete(ctx);
         }, 1500);
     }
 }
