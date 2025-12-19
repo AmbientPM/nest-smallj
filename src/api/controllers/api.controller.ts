@@ -5,6 +5,7 @@ import {
     HttpException,
     HttpStatus,
     ValidationPipe,
+    Get,
 } from '@nestjs/common';
 import { TelegramAuthService } from '../services/telegram-auth.service';
 import { UserService } from '../services/user.service';
@@ -77,7 +78,7 @@ export class ApiController {
         return user;
     }
 
-    @Post('/userStatistics')
+    @Get('/userStatistics')
     async userStatistics(@Body(ValidationPipe) body: UserStatisticsDto) {
         const user = await this.validateAndGetUser(body.initData);
         return this.userService.getUserStatistics(user.id);

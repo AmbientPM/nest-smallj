@@ -1,0 +1,235 @@
+{
+  "info": {
+    "name": "SMALLJ API",
+    "description": "API коллекция для SMALLJ проекта",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "User",
+      "item": [
+        {
+          "name": "Get User Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/userStatistics",
+              "host": ["{{baseUrl}}"],
+              "path": ["userStatistics"]
+            }
+          }
+        },
+        {
+          "name": "Deposit to Card",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"amount\": 100\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/depositCard",
+              "host": ["{{baseUrl}}"],
+              "path": ["depositCard"]
+            }
+          }
+        },
+        {
+          "name": "Withdraw from Card",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"amount\": 50\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/withdrawCard",
+              "host": ["{{baseUrl}}"],
+              "path": ["withdrawCard"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wallet",
+      "item": [
+        {
+          "name": "Add Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"publicKey\": \"GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/addWallet",
+              "host": ["{{baseUrl}}"],
+              "path": ["addWallet"]
+            }
+          }
+        },
+        {
+          "name": "Verify Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"walletId\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/verifyWallet",
+              "host": ["{{baseUrl}}"],
+              "path": ["verifyWallet"]
+            }
+          }
+        },
+        {
+          "name": "Delete Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"walletId\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/deleteWallet",
+              "host": ["{{baseUrl}}"],
+              "path": ["deleteWallet"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Billing",
+      "item": [
+        {
+          "name": "Add Billing Details",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"fullName\": \"John Doe\",\n  \"address\": \"123 Main Street\",\n  \"city\": \"New York\",\n  \"country\": \"USA\",\n  \"zipCode\": \"10001\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/addBillingDetails",
+              "host": ["{{baseUrl}}"],
+              "path": ["addBillingDetails"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Purchase",
+      "item": [
+        {
+          "name": "Create Purchase",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"companyId\": 1,\n  \"amount\": 1000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createPurchase",
+              "host": ["{{baseUrl}}"],
+              "path": ["createPurchase"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Swap",
+      "item": [
+        {
+          "name": "Swap Assets",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"initData\": \"{{initData}}\",\n  \"fromAsset\": \"XLM\",\n  \"toAsset\": \"NWO\",\n  \"amount\": 100\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/swap",
+              "host": ["{{baseUrl}}"],
+              "path": ["swap"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "initData",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

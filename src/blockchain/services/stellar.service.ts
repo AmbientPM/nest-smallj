@@ -218,6 +218,9 @@ export class StellarService {
             return result.hash;
         } catch (error) {
             this.logger.error(`Failed to send multiple tokens: ${error.message}`);
+            if (error.response?.data) {
+                this.logger.error(`Stellar error details: ${JSON.stringify(error.response.data)}`);
+            }
             throw new StellarAPIError(`Failed to send multiple tokens: ${error.message}`);
         }
     }
@@ -225,11 +228,19 @@ export class StellarService {
     async parseHolders(asset: Asset): Promise<Record<string, number>> {
         try {
             const holders: Record<string, number> = {};
-            let url = `https://horizon.stellar.org/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
+            const baseUrl = this.testnet 
+                ? 'https://horizon-testnet.stellar.org'
+                : 'https://horizon.stellar.org';
+            let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
 
             while (url) {
                 const response = await fetch(url);
                 const data = await response.json();
+
+                if (!data._embedded || !data._embedded.records) {
+                    this.logger.warn(`No holders found for ${asset.getCode()}`);
+                    break;
+                }
 
                 const records = data._embedded.records;
 

@@ -45,28 +45,16 @@ async function main() {
 
     // Create wallets for mock user
     const wallet1 = await prisma.wallet.upsert({
-        where: { publicKey: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO' },
+        where: { publicKey: 'GB5JRPP2FDUDMUSQAQPBN345NFBWRGODPSASETSQ2EUWXB4XE5AEVWGV' },
         update: {},
         create: {
             userId: mockUser.id,
-            publicKey: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
+            publicKey: 'GB5JRPP2FDUDMUSQAQPBN345NFBWRGODPSASETSQ2EUWXB4XE5AEVWGV',
             balance: 1000,
             isActive: true,
         },
     });
     console.log('✅ Wallet 1 created:', wallet1);
-
-    const wallet2 = await prisma.wallet.upsert({
-        where: { publicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' },
-        update: {},
-        create: {
-            userId: mockUser.id,
-            publicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
-            balance: 500,
-            isActive: true,
-        },
-    });
-    console.log('✅ Wallet 2 created:', wallet2);
 
     // Create billing details for mock user
     const billingDetails = await prisma.billingDetails.upsert({
@@ -88,15 +76,15 @@ async function main() {
         where: { id: 1 },
         update: {},
         create: {
-            depositAddress: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
+            depositAddress: 'GBQAV7QSBJHWVYPP5OHINHA2SSTNI7DN4QI2JSSZ6ZYE3QECGF576TNQ',
             depositAmount: 10,
-            issuerPublic: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
-            issuerSecret: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+            issuerPublic: 'GBQAV7QSBJHWVYPP5OHINHA2SSTNI7DN4QI2JSSZ6ZYE3QECGF576TNQ',
+            issuerSecret: 'SBAXEOQ5VYTMZ52MQ2YDAFFHYZ6SR7HBBJTU6ICAAZRZUMKHVPUUBCUI',
             sendingEnabled: true,
             xrpDepositAddress: 'rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
             xrpNwoPrice: 0.5,
-            purchaseDistributorPublic: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
-            purchaseDistributorSecret: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+            purchaseDistributorPublic: 'GAOTTUMH3BR3FBMSMDINWFSGGZZVLNNEMQJVF4IFRH624J63JASJ5HYY',
+            purchaseDistributorSecret: 'SB57D32DTBCCAC3PU3KRMUNGVX22B4P55BIR4B6BKD6GEN7IT6NLPPOE',
             rewardsTier: {
                 defaultPercent: 5,
                 levels: [
@@ -123,7 +111,7 @@ async function main() {
         update: {},
         create: {
             assetCode: 'NWO',
-            assetIssuer: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
+            assetIssuer: 'GBQAV7QSBJHWVYPP5OHINHA2SSTNI7DN4QI2JSSZ6ZYE3QECGF576TNQ',
             price: 1.5,
             tier: {
                 defaultPercent: 10,
@@ -163,8 +151,8 @@ async function main() {
         where: { id: 1 },
         update: {},
         create: {
-            publicKey: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
-            secretKey: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+            publicKey: 'GAOTTUMH3BR3FBMSMDINWFSGGZZVLNNEMQJVF4IFRH624J63JASJ5HYY',
+            secretKey: 'SB57D32DTBCCAC3PU3KRMUNGVX22B4P55BIR4B6BKD6GEN7IT6NLPPOE',
             isActive: true,
         },
     });
@@ -174,8 +162,8 @@ async function main() {
         where: { id: 2 },
         update: {},
         create: {
-            publicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
-            secretKey: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+            publicKey: 'GDDARRZ4M2RCZTSTVFAEG2KYCHPTVGXKKYUCOWZSGMG2IKHP5OTC6LRN',
+            secretKey: 'SCC26OAERB5LMSAG5KVOK44LMV5IWDLZYMRIASRWNSLJ7SY3QGMW2KY7',
             isActive: true,
         },
     });
@@ -213,7 +201,7 @@ async function main() {
             startAmount: 0,
             addingAmount: 100,
             endAmount: 10000,
-            distributorPublic: 'GCKUZK3B4O5XKA5TM2CJB5UZE5NHIQN2A2Y4XTYBIVV47AWZVPYFDNWO',
+            distributorPublic: 'GAOTTUMH3BR3FBMSMDINWFSGGZZVLNNEMQJVF4IFRH624J63JASJ5HYY',
         },
     });
     console.log('✅ Liquidity 1 created:', liquidity1);
@@ -226,7 +214,7 @@ async function main() {
             startAmount: 0,
             addingAmount: 50,
             endAmount: 5000,
-            distributorPublic: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+            distributorPublic: 'GDDARRZ4M2RCZTSTVFAEG2KYCHPTVGXKKYUCOWZSGMG2IKHP5OTC6LRN',
         },
     });
     console.log('✅ Liquidity 2 created:', liquidity2);
