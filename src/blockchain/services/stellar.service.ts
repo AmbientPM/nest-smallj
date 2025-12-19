@@ -228,7 +228,7 @@ export class StellarService {
     async parseHolders(asset: Asset): Promise<Record<string, number>> {
         try {
             const holders: Record<string, number> = {};
-            const baseUrl = this.testnet 
+            const baseUrl = this.testnet
                 ? 'https://horizon-testnet.stellar.org'
                 : 'https://horizon.stellar.org';
             let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
