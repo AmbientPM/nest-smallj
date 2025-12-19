@@ -226,47 +226,138 @@ export class StellarService {
     }
 
     async parseHolders(asset: Asset): Promise<Record<string, number>> {
-        try {
-            const holders: Record<string, number> = {};
-            const baseUrl = this.testnet
-                ? 'https://horizon-testnet.stellar.org'
-                : 'https://horizon.stellar.org';
-            let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
+        const holders: Record<string, number> = {};
+        const baseUrl = this.testnet
+            ? 'https://horizon-testnet.stellar.org'
+            : 'https://horizon.stellar.org';
+        let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
 
-            while (url) {
+        const retryMax = 5;
+        let retryCount = 0;
+
+        while (url) {
+            try {
                 const response = await fetch(url);
-                const data = await response.json();
 
-                if (!data._embedded || !data._embedded.records) {
-                    this.logger.warn(`No holders found for ${asset.getCode()}`);
-                    break;
-                }
+                if (response.status === 200) {
+                    const data = await response.json();
 
-                const records = data._embedded.records;
+                    if (!data._embedded || !data._embedded.records) {
+                        this.logger.warn(`ParseHolders:${asset.getCode()}: No holders found`);
+                        break;
+                    }
 
-                for (const holder of records) {
-                    const walletPublicKey = holder.account_id;
-                    const balances = holder.balances;
+                    const records = data._embedded.records;
 
-                    for (const balance of balances) {
-                        if (
-                            balance.asset_code === asset.getCode() &&
-                            balance.asset_issuer === asset.getIssuer()
-                        ) {
-                            holders[walletPublicKey] = parseFloat(balance.balance);
-                            break;
+                    for (const holder of records) {
+                        const walletPublicKey = holder.account_id;
+                        let walletAssetBalance = 0.0;
+                        const walletBalances = holder.balances;
+
+                        for (const balance of walletBalances) {
+                            if (
+                                balance.asset_code === asset.getCode() &&
+                                balance.asset_issuer === asset.getIssuer()
+                            ) {
+                                walletAssetBalance += parseFloat(balance.balance || '0');
+                            }
+                        }
+
+                        holders[walletPublicKey] = walletAssetBalance;
+                    }
+
+                    this.logger.log(
+                        `ParseHolders:${asset.getCode()}: 200 OK, ${records.length} holders found`,
+                    );
+
+                    // Get next URL for pagination
+                    url = data._links?.next?.href || null;
+
+                    // Don't break on empty records, continue pagination
+                    if (!records.length) {
+                        break;
+                    }
+
+                    // Add delay between successful requests to avoid rate limiting
+                    if (url) {
+                        await new Promise((resolve) => setTimeout(resolve, 2000));
+                    }
+
+                    // Reset retry count on success
+                    retryCount = 0;
+                } else if (response.status === 429) {
+                    // Handle rate limiting
+                    let retryAfter = 5;
+                    const retryAfterHeader = response.headers.get('Retry-After');
+
+                    if (retryAfterHeader) {
+                        const parsed = parseInt(retryAfterHeader, 10);
+                        if (!isNaN(parsed)) {
+                            retryAfter = parsed;
                         }
                     }
+
+                    if (retryCount < retryMax) {
+                        retryCount++;
+                        this.logger.warn(
+                            `ParseHolders:${asset.getCode()}: 429 Too Many Requests, retrying after ${retryAfter} seconds (attempt ${retryCount}/${retryMax})`,
+                        );
+                        await new Promise((resolve) => setTimeout(resolve, (retryAfter + 1) * 1000));
+                        continue; // Retry the same URL
+                    } else {
+                        this.logger.error(
+                            `ParseHolders:${asset.getCode()}: 429 Too Many Requests, max retries reached, giving up`,
+                        );
+                        throw new StellarAPIError(
+                            `Max retries reached for ${asset.getCode()} holders parsing`,
+                        );
+                    }
+                } else {
+                    // Handle other error statuses
+                    this.logger.error(
+                        `ParseHolders:${asset.getCode()}: ${response.status} No response available`,
+                    );
+
+                    if (Object.keys(holders).length === 0) {
+                        throw new StellarAPIError(
+                            `Request failed with status ${response.status} for ${asset.getCode()}`,
+                        );
+                    } else {
+                        // Return partial results if we already have some holders
+                        break;
+                    }
+                }
+            } catch (error) {
+                // Don't catch StellarAPIError that we intentionally threw
+                if (error instanceof StellarAPIError) {
+                    throw error;
                 }
 
-                url = data._links.next ? data._links.next.href : null;
-            }
+                // Handle unexpected errors (network, JSON parse, etc.)
+                this.logger.error(
+                    `ParseHolders:${asset.getCode()}: Unexpected error while processing response: ${error.message}`,
+                    error.stack,
+                );
 
-            return holders;
-        } catch (error) {
-            this.logger.error(`Failed to parse holders: ${error.message}`);
-            throw new StellarAPIError(`Failed to parse holders: ${error.message}`);
+                if (retryCount < retryMax) {
+                    retryCount++;
+                    this.logger.warn(
+                        `ParseHolders:${asset.getCode()}: Unexpected error, retrying (attempt ${retryCount}/${retryMax})`,
+                    );
+                    await new Promise((resolve) => setTimeout(resolve, 5000));
+                    continue; // Retry the same URL
+                } else {
+                    this.logger.error(
+                        `ParseHolders:${asset.getCode()}: Unexpected error, max retries reached, giving up`,
+                    );
+                    throw new StellarAPIError(
+                        `Max retries reached for ${asset.getCode()} holders parsing due to unexpected errors`,
+                    );
+                }
+            }
         }
+
+        return holders;
     }
 
     getPublicKey(secretKey: string): string {

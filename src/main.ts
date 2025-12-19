@@ -5,7 +5,9 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { BigIntSerializerInterceptor } from './api/interceptors/bigint-serializer.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: ['log', 'error', 'warn', 'debug', 'verbose'],
+  });
 
   // Enable CORS
   app.enableCors({

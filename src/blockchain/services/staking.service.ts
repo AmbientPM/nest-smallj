@@ -68,21 +68,17 @@ export class StakingService implements OnModuleInit {
                 where: { isActive: true },
             });
 
-            const walletHolders: Record<string, any> = {};
-
-            // Get balance directly for each known wallet
-            for (const wallet of wallets) {
-                const walletPublicKey = wallet.publicKey;
-
-                try {
-                    const balance = await this.stellar.getBalance(walletPublicKey, this.MAIN_ASSET);
-                    walletHolders[walletPublicKey] = balance;
-                    this.logger.log(`Wallet ${walletPublicKey}: ${balance} NWO`);
-                } catch (error) {
-                    this.logger.warn(`Failed to get balance for ${walletPublicKey}: ${error.message}`);
-                    walletHolders[walletPublicKey] = wallet.balance || 0;
-                }
+            const holders = await this.parseHolders(this.MAIN_ASSET);
+            
+            if (Object.keys(holders).length === 0) {
+                this.logger.warn('No holders found for main asset, skipping update');
+                return;
             }
+
+            // More concise filtering
+            const walletHolders = Object.fromEntries(
+                wallets.map(w => [w.publicKey, holders[w.publicKey] || 0])
+            );
 
             this.logger.log(`Updated balances for ${Object.keys(walletHolders).length} wallets`);
 
@@ -96,6 +92,7 @@ export class StakingService implements OnModuleInit {
                     mainTokenHolders: walletHolders,
                 },
             });
+            
         } catch (error) {
             this.logger.error(`Unexpected error while updating holders: ${error.message}`);
         }
@@ -116,23 +113,11 @@ export class StakingService implements OnModuleInit {
             const settings = await this.prisma.settings.findFirst();
             const mainAssetHolders = (settings?.mainTokenHolders as Record<string, number>) || {};
 
-            // Get balances directly for each staking asset
+            // Parse holders for each staking asset
             const assetHoldersMap = new Map<number, Record<string, number>>();
             for (const stakingAsset of stakingAssets) {
                 const asset = new Asset(stakingAsset.assetCode, stakingAsset.assetIssuer);
-                const holders: Record<string, number> = {};
-
-                // Get balance for each active wallet
-                for (const wallet of wallets) {
-                    try {
-                        const balance = await this.stellar.getBalance(wallet.publicKey, asset);
-                        if (balance > 0) {
-                            holders[wallet.publicKey] = balance;
-                        }
-                    } catch (error) {
-                        this.logger.warn(`Failed to get ${stakingAsset.assetCode} balance for ${wallet.publicKey}`);
-                    }
-                }
+                const holders = await this.parseHolders(asset);
 
                 assetHoldersMap.set(stakingAsset.id, holders);
                 this.logger.log(`${stakingAsset.assetCode}: ${Object.keys(holders).length} wallets with balance`);
@@ -144,6 +129,7 @@ export class StakingService implements OnModuleInit {
 
                     // Get wallet balance from main asset holders
                     const walletBalance = mainAssetHolders[walletPublicKey] || wallet.balance || 0;
+
                     this.logger.log(`w-${walletPublicKey}: MAIN_ASSET balance: ${walletBalance}`);
 
                     // Parse existing rewards
@@ -191,27 +177,36 @@ export class StakingService implements OnModuleInit {
                             0,
                         );
 
-                        if (walletPercent > 0 && balance > 0) {
+                        if (walletPercent > 0) {
                             newReward.earned = existingReward?.earned || 0;
                             newReward.last_update_timestamp = existingReward?.last_update_timestamp || 0;
 
-                            // FOR TESTING: Reward every 30 seconds instead of hourly
-                            const TEST_MODE = true;
-                            const REWARD_INTERVAL_SECONDS = TEST_MODE ? 30 : 3600; // 30 sec for test, 1 hour for prod
+                            // Calculate next reward time based on hour boundaries
+                            let nextRewardTime: number;
+                            if (newReward.last_update_timestamp > 0) {
+                                const lastUpdateDate = new Date(newReward.last_update_timestamp * 1000);
+                                const nextHour = new Date(lastUpdateDate);
+                                nextHour.setMinutes(0, 0, 0);
+                                nextHour.setHours(nextHour.getHours() + this.REWARD_INTERVAL);
+                                nextRewardTime = nextHour.getTime() / 1000;
+                            } else {
+                                // First time reward, set to next hour from current time
+                                const currentDate = new Date(now * 1000);
+                                const nextHour = new Date(currentDate);
+                                nextHour.setMinutes(0, 0, 0);
+                                nextHour.setHours(nextHour.getHours() + this.REWARD_INTERVAL);
+                                nextRewardTime = nextHour.getTime() / 1000;
+                            }
 
-                            // Initialize timestamp if this is first time
-                            if (newReward.last_update_timestamp === 0) {
-                                newReward.last_update_timestamp = now;
-                                this.logger.log(`w-${walletPublicKey}:a-#${stakingAsset.id}: Initialized timestamp`);
-                            } else if (now - newReward.last_update_timestamp >= REWARD_INTERVAL_SECONDS && walletBalance > 0) {
-                                const timeDeltaHours = (now - newReward.last_update_timestamp) / 3600;
-                                const earned = walletBalance * (walletPercent / 100) * timeDeltaHours;
+                            if ((now >= nextRewardTime || newReward.last_update_timestamp === 0) && walletBalance > 0) {
+                                const earned = walletBalance * (walletPercent / 100);
                                 newReward.earned += earned;
                                 newReward.last_update_timestamp = now;
 
                                 this.logger.log(
                                     `w-${walletPublicKey}:a-#${stakingAsset.id}: ` +
-                                    `Rewarded ${earned.toFixed(7)} (total: ${newReward.earned.toFixed(7)})`,
+                                    `Updated reward to ${newReward.earned.toFixed(7)} ` +
+                                    `(last_update_timestamp: ${newReward.last_update_timestamp}, nextRewardTime: ${nextRewardTime})`,
                                 );
 
                                 // Add reward to send queue
