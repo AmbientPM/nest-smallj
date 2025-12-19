@@ -23,7 +23,7 @@ interface RewardData {
 export class StakingService implements OnModuleInit {
     private readonly logger = new Logger(StakingService.name);
     private readonly REWARD_INTERVAL = 1; // hours
-    private readonly TASK_INTERVAL = 30; // 30 seconds for testing (change to 60*5 for production)
+    private readonly TASK_INTERVAL = 60 * 5; // 5 minutes for production
     private readonly MAIN_ASSET = new Asset(
         'NWO',
         'GBQAV7QSBJHWVYPP5OHINHA2SSTNI7DN4QI2JSSZ6ZYE3QECGF576TNQ',
