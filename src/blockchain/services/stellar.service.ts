@@ -1,509 +1,639 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-    Asset,
-    Keypair,
-    Networks,
-    TransactionBuilder,
-    Operation,
-    BASE_FEE,
-    Memo,
-    Horizon,
+  Asset,
+  Keypair,
+  Networks,
+  TransactionBuilder,
+  Operation,
+  BASE_FEE,
+  Memo,
+  Horizon,
+  Claimant,
 } from 'stellar-sdk';
 
+/**
+ * Custom error for Stellar API failures
+ * Preserves the original error for detailed debugging
+ */
 export class StellarAPIError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'StellarAPIError';
-    }
+  public originalError?: any;
+
+  constructor(message: string, originalError?: any) {
+    super(message);
+    this.name = 'StellarAPIError';
+    this.originalError = originalError;
+  }
 }
 
+/**
+ * Custom error for low balance issues
+ * Used when account doesn't have enough XLM for transaction fees
+ */
 export class StellarAPICoreLowBalance extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'StellarAPICoreLowBalance';
-    }
+  constructor(message: string) {
+    super(message);
+    this.name = 'StellarAPICoreLowBalance';
+  }
 }
 
+/**
+ * StellarService
+ * 
+ * Low-level service for interacting with the Stellar blockchain.
+ * Wraps the Stellar SDK with error handling and convenience methods.
+ * 
+ * WHAT IS STELLAR?
+ * 
+ * Stellar is a blockchain network designed for fast, low-cost token transfers.
+ * Think of it like a global payment network where:
+ * - Transactions confirm in 3-5 seconds
+ * - Fees are extremely low (fractions of a cent)
+ * - You can create custom tokens (like loyalty points, stablecoins, etc.)
+ * 
+ * KEY CONCEPTS:
+ * 
+ * 1. Account: A wallet on the blockchain
+ *    - Identified by public key (like: GBQAV7QSBJHWVYPP5OHINHA2SSTNI7DN4QI2JSSZ6ZYE3QECGF576TNQ)
+ *    - Controlled by private key (secret, never share!)
+ *    - Must have minimum 1 XLM balance to exist
+ * 
+ * 2. Asset: A token on the network
+ *    - Native asset: XLM (Stellar's currency, used for fees)
+ *    - Custom assets: Created by users (USD, EUR, NWO, etc.)
+ *    - Format: Code + Issuer (e.g., USD issued by CircleWallet)
+ * 
+ * 3. Trust Line: Permission to receive a specific token
+ *    - Like opening a bank account for a specific currency
+ *    - Must be created before receiving tokens
+ *    - Costs 0.5 XLM to create (locked as reserve)
+ * 
+ * 4. Transaction: A bundle of operations
+ *    - Can contain up to 100 operations
+ *    - All succeed or all fail (atomic)
+ *    - Costs 0.00001 XLM per operation
+ * 
+ * 5. Operation: A single action
+ *    - Payment: Send tokens
+ *    - ChangeTrust: Create trust line
+ *    - ManageSellOffer: Create trade offer
+ *    - CreateClaimableBalance: Send tokens that can be claimed later
+ * 
+ * 6. Claimable Balance: Deferred payment
+ *    - Tokens sent but not received yet
+ *    - Recipient can claim when they're ready
+ *    - Useful when recipient doesn't have trust line
+ * 
+ * HORIZON SERVER:
+ * 
+ * Horizon is the API server for Stellar. It's like a middleman that:
+ * - Accepts transaction submissions
+ * - Provides account information
+ * - Streams real-time updates
+ * - Caches blockchain data for fast queries
+ * 
+ * This service can connect to:
+ * - Testnet: For development/testing (fake money)
+ * - Public network: Real blockchain (real money)
+ */
 @Injectable()
 export class StellarService {
-    private readonly logger = new Logger(StellarService.name);
-    private server: Horizon.Server;
-    private networkPassphrase: string;
-    private testnet: boolean;
-    private readonly SUPPLY_REFILL_LIMIT = 900_000_000_000;
+  private readonly logger = new Logger(StellarService.name);
+  
+  // Horizon server (Stellar API endpoint)
+  private server: Horizon.Server;
+  
+  // Network identifier (prevents testnet transactions on mainnet)
+  private networkPassphrase: string;
+  
+  // Which network we're using (true = testnet, false = mainnet)
+  private testnet: boolean;
+  
+  // Max tokens per operation (to avoid blockchain limits)
+  private readonly SUPPLY_REFILL_LIMIT = 900_000_000_000;
 
-    constructor(private readonly configService: ConfigService) {
-        this.testnet = this.configService.get<string>('STELLAR_NETWORK') !== 'public';
+  constructor(private readonly configService: ConfigService) {
+    this.testnet =
+      this.configService.get<string>('STELLAR_NETWORK') !== 'public';
 
-        if (this.testnet) {
-            this.server = new Horizon.Server('https://horizon-testnet.stellar.org');
-            this.networkPassphrase = Networks.TESTNET;
-        } else {
-            this.server = new Horizon.Server('https://horizon.stellar.org');
-            this.networkPassphrase = Networks.PUBLIC;
+    if (this.testnet) {
+      this.server = new Horizon.Server('https://horizon-testnet.stellar.org');
+      this.networkPassphrase = Networks.TESTNET;
+    } else {
+      this.server = new Horizon.Server('https://horizon.stellar.org');
+      this.networkPassphrase = Networks.PUBLIC;
+    }
+  }
+
+  async checkPublicKey(publicKey: string): Promise<boolean> {
+    try {
+      await this.server.loadAccount(publicKey);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async getBalance(wallet: string, asset: Asset): Promise<number> {
+    try {
+      const account = await this.server.loadAccount(wallet);
+      const balances = account.balances;
+
+      for (const balance of balances) {
+        if (balance.asset_type === 'native' && asset.isNative()) {
+          return parseFloat(balance.balance);
+        } else if (
+          balance.asset_type !== 'native' &&
+          balance.asset_type !== 'liquidity_pool_shares' &&
+          'asset_code' in balance &&
+          'asset_issuer' in balance &&
+          balance.asset_code === asset.getCode() &&
+          balance.asset_issuer === asset.getIssuer()
+        ) {
+          return parseFloat(balance.balance);
         }
+      }
+
+      return 0;
+    } catch (error) {
+      this.logger.error(`Failed to get balance: ${error.message}`);
+      throw new StellarAPIError(`Failed to get balance: ${error.message}`);
     }
+  }
 
-    async checkPublicKey(publicKey: string): Promise<boolean> {
-        try {
-            await this.server.loadAccount(publicKey);
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
+  async receive(
+    sourceAccountPublic: string,
+    destinationAccountPublic: string,
+    asset: Asset,
+    memo: string,
+    amount?: number,
+  ): Promise<boolean> {
+    try {
+      const payments = await this.server
+        .payments()
+        .forAccount(destinationAccountPublic)
+        .order('desc')
+        .limit(20)
+        .call();
 
-    async getBalance(wallet: string, asset: Asset): Promise<number> {
-        try {
-            const account = await this.server.loadAccount(wallet);
-            const balances = account.balances;
+      for (const payment of payments.records) {
+        if (
+          payment.type === 'payment' &&
+          payment.from === sourceAccountPublic &&
+          payment.to === destinationAccountPublic
+        ) {
+          const transaction = await this.server
+            .transactions()
+            .transaction(payment.transaction_hash)
+            .call();
 
-            for (const balance of balances) {
-                if (balance.asset_type === 'native' && asset.isNative()) {
-                    return parseFloat(balance.balance);
-                } else if (
-                    balance.asset_type !== 'native' &&
-                    balance.asset_type !== 'liquidity_pool_shares' &&
-                    'asset_code' in balance &&
-                    'asset_issuer' in balance &&
-                    balance.asset_code === asset.getCode() &&
-                    balance.asset_issuer === asset.getIssuer()
-                ) {
-                    return parseFloat(balance.balance);
-                }
-            }
+          const paymentMemo = transaction.memo || '';
 
-            return 0;
-        } catch (error) {
-            this.logger.error(`Failed to get balance: ${error.message}`);
-            throw new StellarAPIError(`Failed to get balance: ${error.message}`);
-        }
-    }
+          let paymentAsset: Asset;
+          if (payment.asset_type === 'native') {
+            paymentAsset = Asset.native();
+          } else if (payment.asset_code && payment.asset_issuer) {
+            paymentAsset = new Asset(payment.asset_code, payment.asset_issuer);
+          } else {
+            continue;
+          }
 
-    async receive(
-        sourceAccountPublic: string,
-        destinationAccountPublic: string,
-        asset: Asset,
-        memo: string,
-        amount?: number,
-    ): Promise<boolean> {
-        try {
-            const payments = await this.server
-                .payments()
-                .forAccount(destinationAccountPublic)
-                .order('desc')
-                .limit(20)
-                .call();
-
-            for (const payment of payments.records) {
-                if (
-                    payment.type === 'payment' &&
-                    payment.from === sourceAccountPublic &&
-                    payment.to === destinationAccountPublic
-                ) {
-                    const transaction = await this.server
-                        .transactions()
-                        .transaction(payment.transaction_hash)
-                        .call();
-
-                    const paymentMemo = transaction.memo || '';
-
-                    let paymentAsset: Asset;
-                    if (payment.asset_type === 'native') {
-                        paymentAsset = Asset.native();
-                    } else if (payment.asset_code && payment.asset_issuer) {
-                        paymentAsset = new Asset(payment.asset_code, payment.asset_issuer);
-                    } else {
-                        continue;
-                    }
-
-                    if (paymentMemo === memo && paymentAsset.equals(asset)) {
-                        if (amount) {
-                            const paymentAmount = parseFloat(payment.amount);
-                            if (Math.abs(paymentAmount - amount) < 0.0000001) {
-                                return true;
-                            }
-                        } else {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            return false;
-        } catch (error) {
-            this.logger.error(`Failed to check receive: ${error.message}`);
-            return false;
-        }
-    }
-
-    async sendTokens(
-        distributor: Keypair,
-        amount: number,
-        asset: Asset,
-        destination: string,
-        memo?: string,
-    ): Promise<string> {
-        try {
-            if (distributor.publicKey() === destination) {
-                throw new StellarAPIError('Cannot send to self');
-            }
-
-            const distributorAccount = await this.server.loadAccount(distributor.publicKey());
-
-            const transactionBuilder = new TransactionBuilder(distributorAccount, {
-                fee: BASE_FEE,
-                networkPassphrase: this.networkPassphrase,
-            });
-
-            transactionBuilder.addOperation(
-                Operation.payment({
-                    destination,
-                    asset,
-                    amount: amount.toFixed(7),
-                }),
-            );
-
-            if (memo) {
-                transactionBuilder.addMemo(Memo.text(memo));
-            }
-
-            transactionBuilder.setTimeout(30);
-
-            const transaction = transactionBuilder.build();
-            transaction.sign(distributor);
-
-            const result = await this.server.submitTransaction(transaction);
-            return result.hash;
-        } catch (error) {
-            this.logger.error(`Failed to send tokens: ${error.message}`);
-            throw new StellarAPIError(`Failed to send tokens: ${error.message}`);
-        }
-    }
-
-    async sendMultipleTokens(
-        distributor: Keypair,
-        transactions: Array<{ destination: string; asset: Asset; amount: number }>,
-        memo?: string,
-    ): Promise<string> {
-        try {
-            const distributorAccount = await this.server.loadAccount(distributor.publicKey());
-
-            const transactionBuilder = new TransactionBuilder(distributorAccount, {
-                fee: BASE_FEE,
-                networkPassphrase: this.networkPassphrase,
-            });
-
-            for (const tx of transactions) {
-                transactionBuilder.addOperation(
-                    Operation.payment({
-                        destination: tx.destination,
-                        asset: tx.asset,
-                        amount: tx.amount.toFixed(7),
-                    }),
-                );
-            }
-
-            if (memo) {
-                transactionBuilder.addMemo(Memo.text(memo));
-            }
-
-            transactionBuilder.setTimeout(30);
-
-            const transaction = transactionBuilder.build();
-            transaction.sign(distributor);
-
-            const result = await this.server.submitTransaction(transaction);
-            return result.hash;
-        } catch (error) {
-            this.logger.error(`Failed to send multiple tokens: ${error.message}`);
-            if (error.response?.data) {
-                this.logger.error(`Stellar error details: ${JSON.stringify(error.response.data)}`);
-            }
-            throw new StellarAPIError(`Failed to send multiple tokens: ${error.message}`);
-        }
-    }
-
-    async parseHolders(asset: Asset): Promise<Record<string, number>> {
-        const holders: Record<string, number> = {};
-        const baseUrl = this.testnet
-            ? 'https://horizon-testnet.stellar.org'
-            : 'https://horizon.stellar.org';
-        let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
-
-        const retryMax = 5;
-        let retryCount = 0;
-
-        while (url) {
-            try {
-                const response = await fetch(url);
-
-                if (response.status === 200) {
-                    const data = await response.json();
-
-                    if (!data._embedded || !data._embedded.records) {
-                        this.logger.warn(`ParseHolders:${asset.getCode()}: No holders found`);
-                        break;
-                    }
-
-                    const records = data._embedded.records;
-
-                    for (const holder of records) {
-                        const walletPublicKey = holder.account_id;
-                        let walletAssetBalance = 0.0;
-                        const walletBalances = holder.balances;
-
-                        for (const balance of walletBalances) {
-                            if (
-                                balance.asset_code === asset.getCode() &&
-                                balance.asset_issuer === asset.getIssuer()
-                            ) {
-                                walletAssetBalance += parseFloat(balance.balance || '0');
-                            }
-                        }
-
-                        holders[walletPublicKey] = walletAssetBalance;
-                    }
-
-                    this.logger.log(
-                        `ParseHolders:${asset.getCode()}: 200 OK, ${records.length} holders found`,
-                    );
-
-                    // Get next URL for pagination
-                    url = data._links?.next?.href || null;
-
-                    // Don't break on empty records, continue pagination
-                    if (!records.length) {
-                        break;
-                    }
-
-                    // Add delay between successful requests to avoid rate limiting
-                    if (url) {
-                        await new Promise((resolve) => setTimeout(resolve, 2000));
-                    }
-
-                    // Reset retry count on success
-                    retryCount = 0;
-                } else if (response.status === 429) {
-                    // Handle rate limiting
-                    let retryAfter = 5;
-                    const retryAfterHeader = response.headers.get('Retry-After');
-
-                    if (retryAfterHeader) {
-                        const parsed = parseInt(retryAfterHeader, 10);
-                        if (!isNaN(parsed)) {
-                            retryAfter = parsed;
-                        }
-                    }
-
-                    if (retryCount < retryMax) {
-                        retryCount++;
-                        this.logger.warn(
-                            `ParseHolders:${asset.getCode()}: 429 Too Many Requests, retrying after ${retryAfter} seconds (attempt ${retryCount}/${retryMax})`,
-                        );
-                        await new Promise((resolve) => setTimeout(resolve, (retryAfter + 1) * 1000));
-                        continue; // Retry the same URL
-                    } else {
-                        this.logger.error(
-                            `ParseHolders:${asset.getCode()}: 429 Too Many Requests, max retries reached, giving up`,
-                        );
-                        throw new StellarAPIError(
-                            `Max retries reached for ${asset.getCode()} holders parsing`,
-                        );
-                    }
-                } else {
-                    // Handle other error statuses
-                    this.logger.error(
-                        `ParseHolders:${asset.getCode()}: ${response.status} No response available`,
-                    );
-
-                    if (Object.keys(holders).length === 0) {
-                        throw new StellarAPIError(
-                            `Request failed with status ${response.status} for ${asset.getCode()}`,
-                        );
-                    } else {
-                        // Return partial results if we already have some holders
-                        break;
-                    }
-                }
-            } catch (error) {
-                // Don't catch StellarAPIError that we intentionally threw
-                if (error instanceof StellarAPIError) {
-                    throw error;
-                }
-
-                // Handle unexpected errors (network, JSON parse, etc.)
-                this.logger.error(
-                    `ParseHolders:${asset.getCode()}: Unexpected error while processing response: ${error.message}`,
-                    error.stack,
-                );
-
-                if (retryCount < retryMax) {
-                    retryCount++;
-                    this.logger.warn(
-                        `ParseHolders:${asset.getCode()}: Unexpected error, retrying (attempt ${retryCount}/${retryMax})`,
-                    );
-                    await new Promise((resolve) => setTimeout(resolve, 5000));
-                    continue; // Retry the same URL
-                } else {
-                    this.logger.error(
-                        `ParseHolders:${asset.getCode()}: Unexpected error, max retries reached, giving up`,
-                    );
-                    throw new StellarAPIError(
-                        `Max retries reached for ${asset.getCode()} holders parsing due to unexpected errors`,
-                    );
-                }
-            }
-        }
-
-        return holders;
-    }
-
-    getPublicKey(secretKey: string): string {
-        return Keypair.fromSecret(secretKey).publicKey();
-    }
-
-    async trust(sourceAccount: Keypair, asset: Asset): Promise<void> {
-        try {
-            const distributorAccount = await this.server.loadAccount(sourceAccount.publicKey());
-
-            const trustTransaction = new TransactionBuilder(distributorAccount, {
-                fee: '20000',
-                networkPassphrase: this.networkPassphrase,
-            })
-                .addOperation(
-                    Operation.changeTrust({
-                        asset,
-                    }),
-                )
-                .setTimeout(100)
-                .build();
-
-            trustTransaction.sign(sourceAccount);
-            await this.server.submitTransaction(trustTransaction);
-        } catch (error) {
-            this.logger.error(`Failed to add trustline: ${error.message}`);
-            throw new StellarAPIError(`Failed to add trustline: ${error.message}`);
-        }
-    }
-
-    async generateToken(
-        name: string,
-        supply: number,
-        issuer: Keypair,
-        distributor: Keypair,
-    ): Promise<void> {
-        try {
-            const distributorAccount = await this.server.loadAccount(distributor.publicKey());
-            const nwoToken = new Asset(name, issuer.publicKey());
-
-            // Add trustline first
-            const trustTransaction = new TransactionBuilder(distributorAccount, {
-                fee: '10000',
-                networkPassphrase: this.networkPassphrase,
-            })
-                .addOperation(
-                    Operation.changeTrust({
-                        asset: nwoToken,
-                    }),
-                )
-                .setTimeout(100)
-                .build();
-
-            trustTransaction.sign(distributor);
-            await this.server.submitTransaction(trustTransaction);
-
-            // Now send tokens from issuer to distributor
-            const issuingAccount = await this.server.loadAccount(issuer.publicKey());
-            const paymentTransaction = new TransactionBuilder(issuingAccount, {
-                fee: '10000',
-                networkPassphrase: this.networkPassphrase,
-            })
-                .addOperation(
-                    Operation.payment({
-                        destination: distributor.publicKey(),
-                        asset: nwoToken,
-                        amount: supply.toFixed(7),
-                    }),
-                )
-                .setTimeout(100)
-                .build();
-
-            paymentTransaction.sign(issuer);
-            await this.server.submitTransaction(paymentTransaction);
-        } catch (error) {
-            this.logger.error(`Failed to generate token: ${error.message}`);
-            throw new StellarAPIError(`Failed to generate token: ${error.message}`);
-        }
-    }
-
-    async assetInfo(asset: Asset): Promise<any> {
-        try {
-            const network = this.testnet ? 'testnet' : 'public';
-            let url: string;
-
-            if (asset.isNative()) {
-                url = `https://api.stellar.expert/explorer/${network}/asset/XLM`;
+          if (paymentMemo === memo && paymentAsset.equals(asset)) {
+            if (amount) {
+              const paymentAmount = parseFloat(payment.amount);
+              if (Math.abs(paymentAmount - amount) < 0.0000001) {
+                return true;
+              }
             } else {
-                url = `https://api.stellar.expert/explorer/${network}/asset/${asset.getCode()}-${asset.getIssuer()}`;
+              return true;
             }
-
-            const response = await fetch(url);
-
-            if (response.status === 429) {
-                throw new StellarAPIError('Too many requests to Stellar API');
-            }
-
-            const data = await response.json();
-            const tomlInfo = data.toml_info;
-            data.tomlInfo = tomlInfo;
-
-            if (tomlInfo) {
-                delete data.toml_info;
-            }
-
-            return data;
-        } catch (error) {
-            this.logger.error(`Failed to get asset info: ${error.message}`);
-            return null;
+          }
         }
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.error(`Failed to check receive: ${error.message}`);
+      return false;
+    }
+  }
+
+  async sendTokens(
+    distributor: Keypair,
+    amount: number,
+    asset: Asset,
+    destination: string,
+    memo?: string,
+  ): Promise<string> {
+    try {
+      if (distributor.publicKey() === destination) {
+        throw new StellarAPIError('Cannot send to self');
+      }
+
+      const distributorAccount = await this.server.loadAccount(
+        distributor.publicKey(),
+      );
+
+      const transactionBuilder = new TransactionBuilder(distributorAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      });
+
+      transactionBuilder.addOperation(
+        Operation.payment({
+          destination,
+          asset,
+          amount: amount.toFixed(7),
+        }),
+      );
+
+      if (memo) {
+        transactionBuilder.addMemo(Memo.text(memo));
+      }
+
+      transactionBuilder.setTimeout(30);
+
+      const transaction = transactionBuilder.build();
+      transaction.sign(distributor);
+
+      const result = await this.server.submitTransaction(transaction);
+      return result.hash;
+    } catch (error) {
+      this.logger.error(`Failed to send tokens: ${error.message}`);
+      throw new StellarAPIError(`Failed to send tokens: ${error.message}`);
+    }
+  }
+
+  async sendMultipleTokens(
+    distributor: Keypair,
+    transactions: Array<{
+      destination: string;
+      asset: Asset;
+      amount: number;
+      type?: 'payment' | 'claimable_balance';
+    }>,
+    memo?: string,
+  ): Promise<string | null> {
+    try {
+      const distributorAccount = await this.server.loadAccount(
+        distributor.publicKey(),
+      );
+
+      const transactionBuilder = new TransactionBuilder(distributorAccount, {
+        fee: '10000',
+        networkPassphrase: this.networkPassphrase,
+      });
+
+      for (const tx of transactions) {
+        // Skip if sending to self or amount is 0
+        if (distributor.publicKey() === tx.destination || tx.amount === 0) {
+          continue;
+        }
+
+        if (tx.type === 'claimable_balance') {
+          // Create claimable balance with simple unconditional claimants
+          const recipientClaimant = new Claimant(tx.destination);
+          const senderClaimant = new Claimant(distributor.publicKey());
+
+          transactionBuilder.addOperation(
+            Operation.createClaimableBalance({
+              asset: tx.asset,
+              amount: tx.amount.toFixed(7),
+              claimants: [recipientClaimant, senderClaimant],
+            }),
+          );
+        } else {
+          transactionBuilder.addOperation(
+            Operation.payment({
+              destination: tx.destination,
+              asset: tx.asset,
+              amount: tx.amount.toFixed(7),
+            }),
+          );
+        }
+      }
+
+      if (memo) {
+        transactionBuilder.addMemo(Memo.text(memo));
+      }
+
+      transactionBuilder.setTimeout(30);
+
+      const transaction = transactionBuilder.build();
+
+      // Check if transaction has operations
+      if (
+        !(transaction as any).operations ||
+        (transaction as any).operations.length === 0
+      ) {
+        return null;
+      }
+
+      transaction.sign(distributor);
+
+      const result = await this.server.submitTransaction(transaction);
+      return result.hash;
+    } catch (error) {
+      this.logger.error(`Failed to send multiple tokens: ${error.message}`);
+      if (error.response?.data) {
+        this.logger.error(
+          `Stellar error details: ${JSON.stringify(error.response.data)}`,
+        );
+      }
+      throw new StellarAPIError(
+        `Failed to send multiple tokens: ${error.message}`,
+        error,
+      );
+    }
+  }
+
+  async parseHolders(asset: Asset): Promise<Record<string, number>> {
+    const holders: Record<string, number> = {};
+    const baseUrl = this.testnet
+      ? 'https://horizon-testnet.stellar.org'
+      : 'https://horizon.stellar.org';
+    let url = `${baseUrl}/accounts?asset=${asset.getCode()}:${asset.getIssuer()}&limit=200&order=asc`;
+
+    const retryMax = 5;
+    let retryCount = 0;
+
+    while (url) {
+      try {
+        const response = await fetch(url);
+
+        if (response.status === 200) {
+          const data = await response.json();
+
+          if (!data._embedded || !data._embedded.records) {
+            this.logger.warn(
+              `ParseHolders:${asset.getCode()}: No holders found`,
+            );
+            break;
+          }
+
+          const records = data._embedded.records;
+
+          for (const holder of records) {
+            const walletPublicKey = holder.account_id;
+            let walletAssetBalance = 0.0;
+            const walletBalances = holder.balances;
+
+            for (const balance of walletBalances) {
+              if (
+                balance.asset_code === asset.getCode() &&
+                balance.asset_issuer === asset.getIssuer()
+              ) {
+                walletAssetBalance += parseFloat(balance.balance || '0');
+              }
+            }
+
+            holders[walletPublicKey] = walletAssetBalance;
+          }
+
+          this.logger.log(
+            `ParseHolders:${asset.getCode()}: 200 OK, ${records.length} holders found`,
+          );
+
+          // Get next URL for pagination
+          url = data._links?.next?.href || null;
+
+          // Don't break on empty records, continue pagination
+          if (!records.length) {
+            break;
+          }
+
+          // Add delay between successful requests to avoid rate limiting
+          if (url) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+
+          // Reset retry count on success
+          retryCount = 0;
+        } else if (response.status === 429) {
+          // Handle rate limiting
+          let retryAfter = 5;
+          const retryAfterHeader = response.headers.get('Retry-After');
+
+          if (retryAfterHeader) {
+            const parsed = parseInt(retryAfterHeader, 10);
+            if (!isNaN(parsed)) {
+              retryAfter = parsed;
+            }
+          }
+
+          if (retryCount < retryMax) {
+            retryCount++;
+            this.logger.warn(
+              `ParseHolders:${asset.getCode()}: 429 Too Many Requests, retrying after ${retryAfter} seconds (attempt ${retryCount}/${retryMax})`,
+            );
+            await new Promise((resolve) =>
+              setTimeout(resolve, (retryAfter + 1) * 1000),
+            );
+            continue; // Retry the same URL
+          } else {
+            this.logger.error(
+              `ParseHolders:${asset.getCode()}: 429 Too Many Requests, max retries reached, giving up`,
+            );
+            throw new StellarAPIError(
+              `Max retries reached for ${asset.getCode()} holders parsing`,
+            );
+          }
+        } else {
+          // Handle other error statuses
+          this.logger.error(
+            `ParseHolders:${asset.getCode()}: ${response.status} No response available`,
+          );
+
+          if (Object.keys(holders).length === 0) {
+            throw new StellarAPIError(
+              `Request failed with status ${response.status} for ${asset.getCode()}`,
+            );
+          } else {
+            // Return partial results if we already have some holders
+            break;
+          }
+        }
+      } catch (error) {
+        // Don't catch StellarAPIError that we intentionally threw
+        if (error instanceof StellarAPIError) {
+          throw error;
+        }
+
+        // Handle unexpected errors (network, JSON parse, etc.)
+        this.logger.error(
+          `ParseHolders:${asset.getCode()}: Unexpected error while processing response: ${error.message}`,
+          error.stack,
+        );
+
+        if (retryCount < retryMax) {
+          retryCount++;
+          this.logger.warn(
+            `ParseHolders:${asset.getCode()}: Unexpected error, retrying (attempt ${retryCount}/${retryMax})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          continue; // Retry the same URL
+        } else {
+          this.logger.error(
+            `ParseHolders:${asset.getCode()}: Unexpected error, max retries reached, giving up`,
+          );
+          throw new StellarAPIError(
+            `Max retries reached for ${asset.getCode()} holders parsing due to unexpected errors`,
+          );
+        }
+      }
     }
 
-    async getOffer(
-        account: string,
-        selling: Asset,
-        buying: Asset,
-    ): Promise<any | null> {
-        try {
-            const offers = await this.server
-                .offers()
-                .forAccount(account)
-                .limit(1)
-                .order('desc')
-                .call();
+    return holders;
+  }
 
-            const records = offers.records.filter((offer) => {
-                const offerSelling = offer.selling as any;
-                const offerBuying = offer.buying as any;
+  getPublicKey(secretKey: string): string {
+    return Keypair.fromSecret(secretKey).publicKey();
+  }
 
-                const sellingMatch = selling.isNative()
-                    ? offerSelling.asset_type === 'native'
-                    : offerSelling.asset_code === selling.getCode() &&
-                    offerSelling.asset_issuer === selling.getIssuer();
+  async trust(sourceAccount: Keypair, asset: Asset): Promise<void> {
+    try {
+      const distributorAccount = await this.server.loadAccount(
+        sourceAccount.publicKey(),
+      );
 
-                const buyingMatch = buying.isNative()
-                    ? offerBuying.asset_type === 'native'
-                    : offerBuying.asset_code === buying.getCode() &&
-                    offerBuying.asset_issuer === buying.getIssuer();
+      const trustTransaction = new TransactionBuilder(distributorAccount, {
+        fee: '20000',
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          Operation.changeTrust({
+            asset,
+          }),
+        )
+        .setTimeout(100)
+        .build();
 
-                return sellingMatch && buyingMatch;
-            });
-
-            return records.length > 0 ? records[0] : null;
-        } catch (error) {
-            this.logger.error(`Failed to get offer: ${error.message}`);
-            return null;
-        }
+      trustTransaction.sign(sourceAccount);
+      await this.server.submitTransaction(trustTransaction);
+    } catch (error) {
+      this.logger.error(`Failed to add trustline: ${error.message}`);
+      throw new StellarAPIError(`Failed to add trustline: ${error.message}`);
     }
+  }
+
+  async generateToken(
+    name: string,
+    supply: number,
+    issuer: Keypair,
+    distributor: Keypair,
+  ): Promise<void> {
+    try {
+      const distributorAccount = await this.server.loadAccount(
+        distributor.publicKey(),
+      );
+      const nwoToken = new Asset(name, issuer.publicKey());
+
+      // Add trustline first
+      const trustTransaction = new TransactionBuilder(distributorAccount, {
+        fee: '10000',
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          Operation.changeTrust({
+            asset: nwoToken,
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      trustTransaction.sign(distributor);
+      await this.server.submitTransaction(trustTransaction);
+
+      // Now send tokens from issuer to distributor
+      const issuingAccount = await this.server.loadAccount(issuer.publicKey());
+      const paymentTransaction = new TransactionBuilder(issuingAccount, {
+        fee: '10000',
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: distributor.publicKey(),
+            asset: nwoToken,
+            amount: supply.toFixed(7),
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      paymentTransaction.sign(issuer);
+      await this.server.submitTransaction(paymentTransaction);
+    } catch (error) {
+      this.logger.error(`Failed to generate token: ${error.message}`);
+      throw new StellarAPIError(`Failed to generate token: ${error.message}`);
+    }
+  }
+
+  async assetInfo(asset: Asset): Promise<any> {
+    try {
+      const network = this.testnet ? 'testnet' : 'public';
+      let url: string;
+
+      if (asset.isNative()) {
+        url = `https://api.stellar.expert/explorer/${network}/asset/XLM`;
+      } else {
+        url = `https://api.stellar.expert/explorer/${network}/asset/${asset.getCode()}-${asset.getIssuer()}`;
+      }
+
+      const response = await fetch(url);
+
+      if (response.status === 429) {
+        throw new StellarAPIError('Too many requests to Stellar API');
+      }
+
+      const data = await response.json();
+      const tomlInfo = data.toml_info;
+      data.tomlInfo = tomlInfo;
+
+      if (tomlInfo) {
+        delete data.toml_info;
+      }
+
+      return data;
+    } catch (error) {
+      this.logger.error(`Failed to get asset info: ${error.message}`);
+      return null;
+    }
+  }
+
+  async getOffer(
+    account: string,
+    selling: Asset,
+    buying: Asset,
+  ): Promise<any | null> {
+    try {
+      const offers = await this.server
+        .offers()
+        .forAccount(account)
+        .limit(1)
+        .order('desc')
+        .call();
+
+      const records = offers.records.filter((offer) => {
+        const offerSelling = offer.selling as any;
+        const offerBuying = offer.buying as any;
+
+        const sellingMatch = selling.isNative()
+          ? offerSelling.asset_type === 'native'
+          : offerSelling.asset_code === selling.getCode() &&
+            offerSelling.asset_issuer === selling.getIssuer();
+
+        const buyingMatch = buying.isNative()
+          ? offerBuying.asset_type === 'native'
+          : offerBuying.asset_code === buying.getCode() &&
+            offerBuying.asset_issuer === buying.getIssuer();
+
+        return sellingMatch && buyingMatch;
+      });
+
+      return records.length > 0 ? records[0] : null;
+    } catch (error) {
+      this.logger.error(`Failed to get offer: ${error.message}`);
+      return null;
+    }
+  }
 }

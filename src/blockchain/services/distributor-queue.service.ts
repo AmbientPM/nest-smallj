@@ -1,236 +1,272 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { StellarService } from './stellar.service';
 import { Keypair, Asset } from 'stellar-sdk';
+import { Mutex } from 'async-mutex';
+import { TransactionQueue, QueueTransaction } from './transaction-queue';
+import { TransactionSenderService } from './transaction-sender.service';
 
-interface QueueTransaction {
-    destination: string;
-    asset: Asset;
-    amount: number;
-}
-
-interface QueueItem {
-    transactions: QueueTransaction[];
-    memo?: string;
-    issuers: Keypair[];
-    id: string;
-}
-
-class TransactionQueue {
-    private queue: QueueItem[] = [];
-    private processing = false;
-    private readonly logger = new Logger(TransactionQueue.name);
-
-    constructor(
-        private readonly stellar: StellarService,
-        private readonly distributor: Keypair,
-        private readonly id: string,
-    ) { }
-
-    get size(): number {
-        return this.queue.length;
-    }
-
-    async append(item: QueueItem): Promise<void> {
-        this.queue.push(item);
-        this.logger.log(
-            `[${this.id}] Item added to queue. Queue size: ${this.queue.length}`,
-        );
-
-        if (!this.processing) {
-            await this.process();
-        }
-    }
-
-    private async process(): Promise<void> {
-        this.processing = true;
-
-        while (this.queue.length > 0) {
-            const item = this.queue.shift();
-            if (!item) continue;
-
-            try {
-                this.logger.log(`[${item.id}] Processing ${item.transactions.length} transactions`);
-
-                // Send in batches of 100 operations max
-                const batches = this.chunkArray(item.transactions, 100);
-
-                for (const batch of batches) {
-                    const hash = await this.stellar.sendMultipleTokens(
-                        this.distributor,
-                        batch,
-                        item.memo,
-                    );
-
-                    this.logger.log(`[${item.id}] Transaction sent: ${hash}`);
-                }
-
-                this.logger.log(`[${item.id}] Task finished successfully`);
-            } catch (error) {
-                this.logger.error(`[${item.id}] Error: ${error.message}`);
-            }
-
-            // Small delay between batches
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-
-        this.processing = false;
-    }
-
-    private chunkArray<T>(array: T[], size: number): T[][] {
-        const chunks: T[][] = [];
-        for (let i = 0; i < array.length; i += size) {
-            chunks.push(array.slice(i, i + size));
-        }
-        return chunks;
-    }
-}
-
+/**
+ * DistributorQueueService
+ * 
+ * Manages multiple distributor wallets working in parallel to process transactions faster.
+ * 
+ * WHY MULTIPLE DISTRIBUTORS?
+ * 
+ * Blockchain limitation: Each wallet can only send ONE transaction per block (~5 seconds).
+ * 
+ * Problem: If we have 1000 transactions and 1 distributor:
+ * - Time needed = 1000 transactions × 5 seconds = 83 minutes!
+ * 
+ * Solution: Use 10 distributors in parallel:
+ * - Time needed = 100 transactions × 5 seconds = 8.3 minutes!
+ * 
+ * HOW IT WORKS:
+ * 
+ * 1. Multiple Queues:
+ *    - Each distributor wallet has its own TransactionQueue
+ *    - Each queue processes transactions independently
+ *    - All queues run simultaneously (parallel processing)
+ * 
+ * 2. Load Balancing:
+ *    - When new transactions arrive, find the distributor with smallest queue
+ *    - Send transactions to that distributor
+ *    - This distributes work evenly across all distributors
+ * 
+ * 3. Dynamic Updates:
+ *    - Every 60 seconds, check database for new/removed distributors
+ *    - Add queues for new distributors
+ *    - Remove queues for inactive distributors
+ * 
+ * 4. Batching:
+ *    - Split incoming transactions into batches of 100
+ *    - Each batch becomes one item in a queue
+ *    - Stellar allows max 100 operations per transaction
+ * 
+ * EXAMPLE:
+ * 
+ * 500 transactions arrive:
+ * - Distributor 1 queue: 50 items → Gets next 100 transactions
+ * - Distributor 2 queue: 100 items → Skip (busy)
+ * - Distributor 3 queue: 75 items → Skip (busier than #1)
+ * 
+ * Result: Transaction goes to Distributor 1 (least busy)
+ * 
+ * THREAD SAFETY:
+ * Uses Mutex (mutual exclusion lock) to prevent race conditions when
+ * multiple threads try to add transactions simultaneously.
+ */
 @Injectable()
 export class DistributorQueueService implements OnModuleInit {
-    private readonly logger = new Logger(DistributorQueueService.name);
-    private queues: Map<number, TransactionQueue> = new Map();
-    private pendingOperations: QueueTransaction[] = [];
-    private isProcessing = false;
-    private issuers: Keypair[] = [];
+  private readonly logger = new Logger(DistributorQueueService.name);
+  
+  // Check for new/removed distributors every 60 seconds
+  private readonly UPDATE_QUEUES_INTERVAL = 60 * 1000;
 
-    constructor(
-        private readonly prisma: PrismaService,
-        private readonly stellar: StellarService,
-    ) { }
+  // Map of distributor ID → transaction queue
+  private queues: Map<number, TransactionQueue> = new Map();
+  
+  // Temporary storage while distributing to queues
+  private pendingOperations: QueueTransaction[] = [];
+  
+  // Mutex prevents race conditions when adding transactions
+  private readonly appendMutex = new Mutex();
+  
+  // Wallets that can create new tokens (for refilling distributors)
+  private issuers: Keypair[] = [];
 
-    async onModuleInit() {
-        await this.initialize();
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly senderService: TransactionSenderService,
+  ) {}
+
+  /**
+   * Initialize on application startup
+   * Sets up all distributor queues and starts periodic updates
+   */
+  async onModuleInit() {
+    await this.initialize();
+    this.startPeriodicUpdates();
+  }
+
+  /**
+   * Load distributors from database and create queues
+   */
+  private async initialize(): Promise<void> {
+    await this.updateQueues();
+    await this.updateIssuers();
+    this.logger.log('Distributor queues initialized');
+  }
+
+  /**
+   * Start background tasks that run periodically
+   * - Update distributor queues every 60 seconds
+   * - Update issuer wallets every 60 seconds
+   */
+  private startPeriodicUpdates(): void {
+    setInterval(() => {
+      this.updateQueues().catch((error) => {
+        this.logger.error(`Failed to update queues: ${error.message}`);
+      });
+    }, this.UPDATE_QUEUES_INTERVAL);
+
+    setInterval(() => {
+      this.updateIssuers().catch((error) => {
+        this.logger.error(`Failed to update issuers: ${error.message}`);
+      });
+    }, this.UPDATE_QUEUES_INTERVAL);
+  }
+
+  /**
+   * Update distributor queues based on database
+   */
+  private async updateQueues(): Promise<void> {
+    this.logger.log('Updating queues...');
+
+    const distributors = await this.prisma.distributor.findMany({
+      where: { isActive: true },
+    });
+
+    const distributorIds = distributors.map((d) => d.id);
+    const currentIds = Array.from(this.queues.keys());
+
+    // Remove queues for deleted/inactive distributors
+    for (const id of currentIds) {
+      if (!distributorIds.includes(id)) {
+        const queue = this.queues.get(id);
+        queue?.quit();
+        this.queues.delete(id);
+        this.logger.log(`Queue [${id}] deleted`);
+      }
     }
 
-    async initialize(): Promise<void> {
-        await this.updateQueues();
-        await this.updateIssuers();
+    // Add new queues for new distributors
+    for (const distributor of distributors) {
+      if (!this.queues.has(distributor.id)) {
+        try {
+          if (!distributor.secretKey || distributor.secretKey.trim() === '') {
+            this.logger.warn(
+              `Queue [${distributor.id}] skipped: empty secret key`,
+            );
+            continue;
+          }
 
-        // Start periodic updates
-        setInterval(() => this.updateQueues(), 60 * 1000); // Every minute
+          const keypair = Keypair.fromSecret(distributor.secretKey);
+          const queue = this.senderService.createQueue(
+            distributor.id.toString(),
+            keypair,
+          );
+
+          this.queues.set(distributor.id, queue);
+          this.logger.log(
+            `Queue [${distributor.id}] created for ${keypair.publicKey()}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Queue [${distributor.id}] failed to create: ${error.message}`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Update issuer keypairs from settings
+   */
+  private async updateIssuers(): Promise<void> {
+    const settings = await this.prisma.settings.findFirst();
+    const issuerSecret = settings?.issuerSecret;
+
+    if (issuerSecret && issuerSecret.trim() !== '') {
+      try {
+        this.issuers = [Keypair.fromSecret(issuerSecret)];
+        this.logger.debug('Issuer keypair loaded');
+      } catch (error) {
+        this.logger.error(`Failed to load issuer: ${error.message}`);
+        this.issuers = [];
+      }
+    } else {
+      this.issuers = [];
+    }
+  }
+
+  /**
+   * Get the queue with smallest size (least busy)
+   */
+  private getSmallestQueue(): TransactionQueue {
+    if (this.queues.size === 0) {
+      throw new Error('No distributor queues available');
     }
 
-    private async updateQueues(): Promise<void> {
-        this.logger.log('Updating queues');
+    let minQueue: TransactionQueue | null = null;
+    let minSize = Infinity;
+    let minId = 0;
 
-        const distributors = await this.prisma.distributor.findMany({
-            where: { isActive: true },
-        });
-
-        const distributorIds = distributors.map((d) => d.id);
-        const currentIds = Array.from(this.queues.keys());
-
-        // Remove queues for deleted distributors
-        for (const id of currentIds) {
-            if (!distributorIds.includes(id)) {
-                this.queues.delete(id);
-                this.logger.log(`Queue [${id}] deleted`);
-            }
-        }
-
-        // Add new queues
-        for (const distributor of distributors) {
-            if (!this.queues.has(distributor.id)) {
-                try {
-                    // Validate secret key before creating keypair
-                    if (!distributor.secretKey || distributor.secretKey.trim() === '') {
-                        this.logger.warn(`Queue [${distributor.id}] skipped: empty secret key`);
-                        continue;
-                    }
-
-                    const keypair = Keypair.fromSecret(distributor.secretKey);
-                    const queue = new TransactionQueue(this.stellar, keypair, distributor.id.toString());
-                    this.queues.set(distributor.id, queue);
-                    this.logger.log(`Queue [${distributor.id}] created for ${keypair.publicKey()}`);
-                } catch (error) {
-                    this.logger.error(
-                        `Queue [${distributor.id}] failed to create: ${error.message}. Invalid secret key.`,
-                    );
-                    // Continue to next distributor instead of crashing
-                    continue;
-                }
-            }
-        }
+    for (const [id, queue] of this.queues.entries()) {
+      if (queue.size < minSize) {
+        minSize = queue.size;
+        minQueue = queue;
+        minId = id;
+      }
     }
 
-    private async updateIssuers(): Promise<void> {
-        const settings = await this.prisma.settings.findFirst();
-        const issuerSecret = settings?.issuerSecret;
-
-        if (issuerSecret && issuerSecret.trim() !== '') {
-            try {
-                this.issuers = [Keypair.fromSecret(issuerSecret)];
-                this.logger.log('Issuer keypair loaded successfully');
-            } catch (error) {
-                this.logger.error(`Failed to load issuer keypair: ${error.message}`);
-                this.issuers = [];
-            }
-        } else {
-            this.issuers = [];
-            this.logger.warn('No issuer secret found in settings');
-        }
+    if (!minQueue) {
+      throw new Error('No distributor queues available');
     }
 
-    private getSmallestQueue(): TransactionQueue {
-        if (this.queues.size === 0) {
-            throw new Error('No queues available');
-        }
+    this.logger.log(
+      `Smallest queue is [${minId}] with ${minSize} transactions`,
+    );
+    return minQueue;
+  }
 
-        let minQueue: TransactionQueue | null = null;
-        let minSize = Infinity;
+  /**
+   * Append operations to the distributor queue system
+   * Operations are batched and distributed to the least busy queue
+   */
+  async append(
+    operations: QueueTransaction[],
+    memo?: string,
+    id?: string,
+  ): Promise<void> {
+    const release = await this.appendMutex.acquire();
 
-        for (const [id, queue] of this.queues.entries()) {
-            if (queue.size < minSize) {
-                minSize = queue.size;
-                minQueue = queue;
-            }
-        }
+    try {
+      // Add to pending operations inside mutex to prevent race conditions
+      this.pendingOperations.push(...operations);
 
-        if (!minQueue) {
-            throw new Error('No queues available');
-        }
+      this.logger.log(
+        `[${id}] ${operations.length} operations added, ${this.pendingOperations.length} total pending`,
+      );
 
-        this.logger.log(`Smallest queue has ${minSize} transactions`);
-        return minQueue;
-    }
-
-    async append(
-        operations: QueueTransaction[],
-        memo?: string,
-        id?: string,
-    ): Promise<void> {
-        if (this.isProcessing) {
-            this.logger.warn('Already processing, queueing operations');
-            this.pendingOperations.push(...operations);
-            return;
-        }
-
-        this.isProcessing = true;
-        this.pendingOperations.push(...operations);
-
-        this.logger.log(`[${id}] ${this.pendingOperations.length} operations added to pending`);
+      // Process all pending operations
+      while (this.pendingOperations.length > 0) {
+        // Process in batches of 100 operations
+        const batch = this.pendingOperations.splice(0, 100);
 
         try {
-            while (this.pendingOperations.length > 0) {
-                const batch = this.pendingOperations.splice(0, 100);
-                const queue = this.getSmallestQueue();
+          const queue = this.getSmallestQueue();
 
-                await queue.append({
-                    transactions: batch,
-                    memo,
-                    issuers: this.issuers,
-                    id: id || 'unknown',
-                });
+          await queue.append({
+            transactions: batch,
+            memo,
+            issuers: [...this.issuers], // Clone to prevent mutation
+            id: id || 'unknown',
+          });
 
-                this.logger.log(
-                    `${batch.length} operations sent to queue, ${this.pendingOperations.length} left`,
-                );
-            }
+          this.logger.log(
+            `[${id}] ${batch.length} operations sent to queue, ${this.pendingOperations.length} remaining`,
+          );
         } catch (error) {
-            this.logger.error(`Error in append: ${error.message}`);
-        } finally {
-            this.isProcessing = false;
+          this.logger.error(
+            `[${id}] Failed to append to queue: ${error.message}`,
+          );
+          // Put batch back at the front
+          this.pendingOperations.unshift(...batch);
+          throw error;
         }
+      }
+    } finally {
+      release();
     }
+  }
 }
